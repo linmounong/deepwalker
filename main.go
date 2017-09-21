@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 )
 
@@ -14,11 +16,31 @@ var (
 	output      = flag.String("output", "-", "output representation file")
 	workers     = flag.Int("workers", 1, "number of parallel go routines")
 	numberWalks = flag.Int("number-walks", 10, "number of random walks to start at each node")
+	saveVocab   = flag.String("save-vocab", "", "file to save vocab, format conforming to the c implementation")
 )
 
 const (
 	flushEvery = 50000
 )
+
+func dumpVocab(vocab map[uint32]uint64, out *bufio.Writer) {
+	out.WriteString("</s> 0\n") // magic
+	type kv struct {
+		id  uint32
+		cnt uint64
+	}
+	sorted := make([]kv, 0, len(vocab))
+	for id, cnt := range vocab {
+		sorted = append(sorted, kv{id, cnt})
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].cnt > sorted[j].cnt
+	})
+	for _, item := range sorted {
+		out.WriteString(fmt.Sprintf("%d %d\n", item.id, item.cnt))
+	}
+	out.Flush()
+}
 
 func main() {
 	flag.Parse()
@@ -59,6 +81,10 @@ func main() {
 		close(ids)
 	}()
 	var cnt int
+	var vocab map[uint32]uint64
+	if *saveVocab != "" {
+		vocab = map[uint32]uint64{}
+	}
 	for walk := range MergeWalks(walksPool...) {
 		size := len(walk)
 		for i, id := range walk {
@@ -68,6 +94,9 @@ func main() {
 				_, err := out.WriteString(" ")
 				check(err)
 			}
+			if vocab != nil {
+				vocab[id] += 1
+			}
 		}
 		_, err := out.WriteString("\n")
 		check(err)
@@ -76,5 +105,12 @@ func main() {
 			log.Println("wrote", cnt, "lines")
 			out.Flush()
 		}
+	}
+	if vocab != nil {
+		f, err := os.Create(*saveVocab)
+		check(err)
+		defer f.Close()
+		out = bufio.NewWriter(f)
+		dumpVocab(vocab, out)
 	}
 }
